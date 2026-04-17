@@ -3,50 +3,61 @@ from pymongo.errors import ServerSelectionTimeoutError, ConfigurationError
 from dotenv import load_dotenv
 import os
 import ssl
+import streamlit as st
 
 # Load environment variables from .env if available
 load_dotenv()
 
-# MongoDB connection
-default_uri = 'mongodb://localhost:27017/'
-mongo_uri = os.getenv('MONGODB_URI', default_uri)
+# Cached MongoDB connection - prevents disposal on Streamlit reruns
+@st.cache_resource
+def get_db_connection():
+    """Get cached MongoDB connection to prevent 'fetchedvalue has been disposed' errors"""
+    default_uri = 'mongodb://localhost:27017/'
+    mongo_uri = os.getenv('MONGODB_URI', default_uri)
 
-# Avoid connecting to placeholder Atlas URI if .env has not been configured yet
-if any(tag in mongo_uri for tag in ['<username>', '<password>', '<cluster-url>']):
-    mongo_uri = default_uri
+    # Avoid connecting to placeholder Atlas URI if .env has not been configured yet
+    if any(tag in mongo_uri for tag in ['<username>', '<password>', '<cluster-url>']):
+        mongo_uri = default_uri
 
-# MongoDB connection options for better SSL/TLS handling
-connection_kwargs = {
-    'serverSelectionTimeoutMS': 30000,
-    'connectTimeoutMS': 30000,
-    'socketTimeoutMS': 30000,
-    'retryWrites': True,
-}
+    # MongoDB connection options for better SSL/TLS handling
+    connection_kwargs = {
+        'serverSelectionTimeoutMS': 30000,
+        'connectTimeoutMS': 30000,
+        'socketTimeoutMS': 30000,
+        'retryWrites': True,
+        'maxPoolSize': 50,
+        'minPoolSize': 10,
+    }
 
-# Add SSL options for Atlas if needed
-if 'mongodb+srv://' in mongo_uri:
-    connection_kwargs['ssl'] = True
+    # Add SSL options for Atlas if needed
+    if 'mongodb+srv://' in mongo_uri:
+        connection_kwargs['ssl'] = True
 
-try:
-    client = MongoClient(mongo_uri, **connection_kwargs)
-    # Test the connection
-    client.server_info()
-    db = client['bsit_database']
-    print("✓ Connected to MongoDB successfully")
-except (ServerSelectionTimeoutError, ConfigurationError, Exception) as e:
-    print(f"⚠ Warning: Could not connect to Atlas ({str(e)[:100]}...)")
-    print("  Falling back to local MongoDB...")
     try:
-        client = MongoClient('mongodb://localhost:27017/', serverSelectionTimeoutMS=5000)
+        client = MongoClient(mongo_uri, **connection_kwargs)
+        # Test the connection
         client.server_info()
         db = client['bsit_database']
-        print("✓ Connected to local MongoDB")
-    except Exception as local_err:
-        print(f"✗ Local MongoDB also unavailable: {local_err}")
-        # Still create client object for graceful degradation
-        client = MongoClient(default_uri)
-        db = client['bsit_database']
+        print("✓ Connected to MongoDB successfully")
+        return db
+    except (ServerSelectionTimeoutError, ConfigurationError, Exception) as e:
+        print(f"⚠ Warning: Could not connect to Atlas ({str(e)[:100]}...)")
+        print("  Falling back to local MongoDB...")
+        try:
+            client = MongoClient('mongodb://localhost:27017/', serverSelectionTimeoutMS=5000, maxPoolSize=50, minPoolSize=10)
+            client.server_info()
+            db = client['bsit_database']
+            print("✓ Connected to local MongoDB")
+            return db
+        except Exception as local_err:
+            print(f"✗ Local MongoDB also unavailable: {local_err}")
+            # Still create client object for graceful degradation
+            client = MongoClient(default_uri, maxPoolSize=50, minPoolSize=10)
+            db = client['bsit_database']
+            return db
 
+# Get cached database connection
+db = get_db_connection()
 
 # Collections
 users_collection = db['users']
